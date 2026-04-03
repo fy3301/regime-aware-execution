@@ -95,22 +95,91 @@ def evaluate_by_regime(model, regime_aware, n_episodes=200):
         print(f"  Bear days: WAP={np.mean([r['wap_norm'] for r in bear_results]):.4f}, "
               f"n={len(bear_results)}")
 
-if __name__ == "__main__":
-    # train both agents
-    model_aware = train_agent(regime_aware=True, total_timesteps=500_000)
-    model_blind = train_agent(regime_aware=False, total_timesteps=500_000)
+def train_and_evaluate_seeds(regime_aware, n_seeds=5, timesteps=500_000):
+    label = "regime_aware" if regime_aware else "blind"
+    all_wap, all_comp = [], []
+    
+    for seed in range(n_seeds):
+        print(f"\nSeed {seed+1}/{n_seeds} — {label}")
+        model = train_agent(regime_aware=regime_aware, 
+                          total_timesteps=timesteps, seed=seed)
+        wap, comp = evaluate_agent(model, regime_aware=regime_aware)
+        if wap:
+            all_wap.append(wap)
+            all_comp.append(comp)
+    
+    print(f"\n{label} across {n_seeds} seeds:")
+    print(f"  WAP:  {np.mean(all_wap):.4f} ± {np.std(all_wap):.4f}")
+    print(f"  Comp: {np.mean(all_comp):.4f} ± {np.std(all_comp):.4f}")
+    return all_wap, all_comp
 
-    # evaluate both
-    print("\n=== RESULTS ===")
-    print(f"{'Strategy':20s} | {'WAP_norm':10s} | {'Completion':10s}")
-    print("-" * 45)
-
-    # baselines for reference
-    print(f"{'TWAP (rule)':20s} | {'1.0277':10s} | {'0.850':10s}")
-    print(f"{'Regime Aware (rule)':20s} | {'0.9949':10s} | {'0.997':10s}")
-
-    evaluate_agent(model_aware, regime_aware=True)
-    evaluate_agent(model_blind, regime_aware=False)
+def train_regime_conditioned(n_seeds=5, timesteps=500_000):
+    from environment import ExecutionEnv
+    
+    def make_conditioned_env():
+        def _init():
+            return ExecutionEnv(regime_aware=True, 
+                              reward_mode='regime_conditioned')
+        return _init
+    
+    all_wap, all_comp = [], []
+    
+    for seed in range(n_seeds):
+        print(f"\nSeed {seed+1}/{n_seeds} — regime_conditioned")
+        env = make_vec_env(make_conditioned_env(), n_envs=4, seed=seed)
+        model = PPO("MlpPolicy", env, verbose=0, seed=seed,
+                   learning_rate=3e-4, n_steps=512, batch_size=64,
+                   n_epochs=10, gamma=0.99)
+        model.learn(total_timesteps=timesteps)
+        model.save(f"ppo_conditioned_seed{seed}")
         
-    evaluate_by_regime(model_aware, regime_aware=True)
-    evaluate_by_regime(model_blind, regime_aware=False)
+        # evaluate
+        results = []
+        for ep in range(100):
+            eval_env = ExecutionEnv(regime_aware=True,
+                                   reward_mode='regime_conditioned')
+            obs, _ = eval_env.reset(seed=ep)
+            done = False
+            while not done:
+                action, _ = model.predict(obs, deterministic=True)
+                obs, reward, done, _, _ = eval_env.step(action)
+            r = eval_env.get_results()
+            if r:
+                results.append(r)
+        
+        if results:
+            wap = np.mean([r['wap_norm'] for r in results])
+            comp = np.mean([r['completion'] for r in results])
+            all_wap.append(wap)
+            all_comp.append(comp)
+            print(f"  Seed {seed}: WAP={wap:.4f}, Comp={comp:.3f}")
+    
+    print(f"\nRegime Conditioned across {n_seeds} seeds:")
+    print(f"  WAP:  {np.mean(all_wap):.4f} ± {np.std(all_wap):.4f}")
+    print(f"  Comp: {np.mean(all_comp):.4f} ± {np.std(all_comp):.4f}")
+    return all_wap, all_comp
+
+if __name__ == "__main__":
+    print("=== MULTI-SEED EVALUATION ===")
+    print("Running 5 seeds each.\n")
+    
+    aware_wap, aware_comp = train_and_evaluate_seeds(regime_aware=True, 
+                                                      n_seeds=5, 
+                                                      timesteps=500_000)
+    blind_wap, blind_comp = train_and_evaluate_seeds(regime_aware=False, 
+                                                     n_seeds=5, 
+                                                     timesteps=500_000)
+    
+    print("\n=== FINAL COMPARISON ===")
+    print(f"{'Strategy':25s} | {'WAP mean±std':20s} | {'Completion':10s}")
+    print("-" * 60)
+    print(f"{'TWAP (rule)':25s} | {'1.0277 ± 0.000':20s} | {'0.850':10s}")
+    print(f"{'Regime Aware (rule)':25s} | {'0.9949 ± 0.000':20s} | {'0.997':10s}")
+    print(f"{'PPO blind':25s} | "
+          f"{np.mean(blind_wap):.4f} ± {np.std(blind_wap):.4f}    | "
+          f"{np.mean(blind_comp):.3f}")
+    print(f"{'PPO regime-aware':25s} | "
+          f"{np.mean(aware_wap):.4f} ± {np.std(aware_wap):.4f}    | "
+          f"{np.mean(aware_comp):.3f}")
+    
+    train_regime_conditioned(n_seeds=5, timesteps=500_000)

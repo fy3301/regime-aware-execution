@@ -16,7 +16,7 @@ class ExecutionEnv(gym.Env):
     """
 
     def __init__(self, regime_aware=True, total_shares=20000, 
-                 total_steps=1380, seed=None):
+                 total_steps=1380, seed=None, reward_mode='standard'):
         super().__init__()
         
         # 1380 steps = 23 hours / 60 seconds per step
@@ -25,6 +25,7 @@ class ExecutionEnv(gym.Env):
         self.regime_aware = regime_aware
         self.init_seed = seed
         self.starting_price = 100000.0
+        self.reward_mode = reward_mode
 
         # action: fraction of remaining shares to buy this step (0 to 1)
         self.action_space = spaces.Box(
@@ -109,15 +110,27 @@ class ExecutionEnv(gym.Env):
         # reward: negative execution cost, normalized
         if qty > 0:
             cost = (avg_price - self.starting_price) / self.starting_price
-            execution_reward = -cost * (qty / self.total_shares)
-            # bonus for actually executing shares
-            progress_reward = 0.5 * (qty / self.total_shares)
-            reward = execution_reward + progress_reward
+            
+            if self.reward_mode == 'regime_conditioned':
+                if self.current_regime == 0:  # bull — urgency matters
+                    # penalize delay: reward fast execution
+                    urgency_bonus = 0.3 * (qty / self.total_shares)
+                    cost_penalty = -2.0 * cost * (qty / self.total_shares)
+                    reward = cost_penalty + urgency_bonus
+                else:  # bear — patience pays
+                    # reward buying below starting price
+                    savings = max(0, -cost)  # positive when price < starting
+                    patience_reward = 1.0 * savings * (qty / self.total_shares)
+                    progress_reward = 0.3 * (qty / self.total_shares)
+                    reward = patience_reward + progress_reward
+            else:
+                # original reward
+                cost_penalty = -cost * (qty / self.total_shares)
+                progress_reward = 0.5 * (qty / self.total_shares)
+                reward = cost_penalty + progress_reward
         else:
-            # small penalty for doing nothing to discourage passivity
             reward = -0.001
 
-        # stronger incompletion penalty at end
         if done and self.shares_remaining > 0:
             incompletion_penalty = -20.0 * (self.shares_remaining / self.total_shares)
             reward += incompletion_penalty
