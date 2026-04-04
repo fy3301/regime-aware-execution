@@ -9,17 +9,15 @@ class ExecutionEnv(gym.Env):
     
     Agent must buy `total_shares` before time runs out.
     At each step it decides what fraction of remaining shares to execute.
-    
-    Two modes:
-    - regime_aware=True:  agent sees regime label in state
+
+    Modes:
+    - regime_aware=True: agent sees regime label in state
     - regime_aware=False: agent does not see regime label
     """
 
     def __init__(self, regime_aware=True, total_shares=20000, 
                  total_steps=1380, seed=None, reward_mode='standard'):
         super().__init__()
-        
-        # 1380 steps = 23 hours / 60 seconds per step
         self.total_steps = total_steps
         self.total_shares = total_shares
         self.regime_aware = regime_aware
@@ -45,9 +43,13 @@ class ExecutionEnv(gym.Env):
         )
 
     def reset(self, seed=None, options=None):
+        """
+        Start a new episode / trading day.
+
+        Returns:
+            obs (np.array): initial observation
+        """
         super().reset(seed=seed)
-        
-        # new random day each episode
         ep_seed = seed if seed is not None else np.random.randint(0, 100000)
         self.fund = CTMSTOUFundamental(seed=ep_seed)
         
@@ -57,7 +59,7 @@ class ExecutionEnv(gym.Env):
         self.executed_shares = 0.0
         self.price_history = []
         
-        # advance simulator one step to get initial state
+        # initialize first market step
         price, regime = self.fund.step()
         self.current_price = price
         self.current_regime = regime
@@ -66,28 +68,42 @@ class ExecutionEnv(gym.Env):
         return self._get_obs(), {}
 
     def _get_obs(self):
+        """
+        Construct current observation.
+
+        Returns:
+            np.array: observation vector
+        """
         shares_norm = self.shares_remaining / self.total_shares
         time_norm = 1.0 - (self.step_num / self.total_steps)
         price_norm = self.current_price / self.starting_price
         
-        # rolling volatility: std of last 10 prices, normalized
-        if len(self.price_history) >= 2:
-            vol = np.std(self.price_history[-10:]) / self.starting_price
-        else:
-            vol = 0.0
+        vol = np.std(self.price_history[-10:]) / self.starting_price if len(self.price_history) >= 2 else 0.0
 
         if self.regime_aware:
             return np.array([shares_norm, time_norm, price_norm, 
-                           vol, float(self.current_regime)], dtype=np.float32)
+                             vol, float(self.current_regime)], dtype=np.float32)
         else:
-            return np.array([shares_norm, time_norm, price_norm, 
-                           vol], dtype=np.float32)
+            return np.array([shares_norm, time_norm, price_norm, vol], dtype=np.float32)
 
     def step(self, action):
+        """
+        Take a step in the environment.
+
+        Args:
+            action (np.array): fraction of remaining shares to buy (0-1)
+        
+        Returns:
+            obs (np.array): next observation
+            reward (float): reward for this step
+            done (bool): whether episode finished
+            truncated (bool): always False
+            info (dict): empty
+        """
         fraction = float(np.clip(action[0], 0.0, 1.0))
         qty = fraction * self.shares_remaining
 
-        # advance market by 60 seconds (one period)
+        # advance market by 60 seconds
         prices_this_step = []
         for _ in range(60):
             price, regime = self.fund.step()
@@ -98,7 +114,6 @@ class ExecutionEnv(gym.Env):
         self.current_regime = regime
         avg_price = np.mean(prices_this_step)
 
-        # execute at average price of the period
         if qty > 0:
             self.executed_value += qty * avg_price
             self.executed_shares += qty
@@ -106,25 +121,21 @@ class ExecutionEnv(gym.Env):
 
         self.step_num += 1
         done = self.step_num >= self.total_steps
-        
-        # reward: negative execution cost, normalized
+
+        # compute reward
         if qty > 0:
             cost = (avg_price - self.starting_price) / self.starting_price
-            
             if self.reward_mode == 'regime_conditioned':
-                if self.current_regime == 0:  # bull — urgency matters
-                    # penalize delay: reward fast execution
+                if self.current_regime == 0:
                     urgency_bonus = 0.3 * (qty / self.total_shares)
                     cost_penalty = -2.0 * cost * (qty / self.total_shares)
                     reward = cost_penalty + urgency_bonus
-                else:  # bear — patience pays
-                    # reward buying below starting price
-                    savings = max(0, -cost)  # positive when price < starting
+                else:
+                    savings = max(0, -cost)
                     patience_reward = 1.0 * savings * (qty / self.total_shares)
                     progress_reward = 0.3 * (qty / self.total_shares)
                     reward = patience_reward + progress_reward
             else:
-                # original reward
                 cost_penalty = -cost * (qty / self.total_shares)
                 progress_reward = 0.5 * (qty / self.total_shares)
                 reward = cost_penalty + progress_reward
@@ -139,6 +150,12 @@ class ExecutionEnv(gym.Env):
         return obs, reward, done, False, {}
 
     def get_results(self):
+        """
+        Return final WAP and completion stats for episode.
+
+        Returns:
+            dict or None
+        """
         if self.executed_shares == 0:
             return None
         wap = self.executed_value / self.executed_shares

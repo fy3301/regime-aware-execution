@@ -2,9 +2,13 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
+import json
+import os
 
-# ── Figure 1: Strategy comparison bar chart ──────────────────
-strategies = ['TWAP', 'Full MO', 'Regime\nAware Rule', 
+os.makedirs('../figures', exist_ok=True)
+
+# ── Figure 1: Strategy comparison ────────────────────────────
+strategies = ['TWAP', 'Full MO', 'Regime\nAware Rule',
               'PPO\nBlind', 'PPO State\nAware', 'PPO Reward\nConditioned']
 wap_means  = [1.0277, 1.0278, 0.9949, 1.0003, 1.0004, 1.0069]
 wap_stds   = [0.0,    0.0,    0.0,    0.0000, 0.0001, 0.0131]
@@ -12,39 +16,34 @@ completion = [0.850,  1.000,  0.997,  1.000,  1.000,  0.996]
 colors = ['#4C72B0','#4C72B0','#2ca02c','#DD8452','#DD8452','#9467bd']
 
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-
-bars = ax1.bar(strategies, wap_means, yerr=wap_stds, 
+bars = ax1.bar(strategies, wap_means, yerr=wap_stds,
                color=colors, capsize=4, alpha=0.85, edgecolor='black')
-ax1.axhline(y=1.0, color='red', linestyle='--', alpha=0.5, 
+ax1.axhline(y=1.0, color='red', linestyle='--', alpha=0.5,
             label='Starting price')
 ax1.set_ylabel('WAP Normalized')
 ax1.set_title('Execution Cost by Strategy\n(lower is better)')
 ax1.legend()
 ax1.set_ylim(0.97, 1.06)
-
-# annotate bars
 for bar, val in zip(bars, wap_means):
     ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.001,
              f'{val:.4f}', ha='center', va='bottom', fontsize=8)
 
-bars2 = ax2.bar(strategies, completion, color=colors, 
+bars2 = ax2.bar(strategies, completion, color=colors,
                 alpha=0.85, edgecolor='black')
 ax2.set_ylabel('Completion Rate')
 ax2.set_title('Order Completion by Strategy\n(higher is better)')
 ax2.set_ylim(0.8, 1.05)
-
 for bar, val in zip(bars2, completion):
     ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.003,
              f'{val:.3f}', ha='center', va='bottom', fontsize=8)
 
 plt.tight_layout()
-plt.savefig('paper/fig1_strategy_comparison.png', dpi=200, 
+plt.savefig('../figures/fig1_strategy_comparison.png', dpi=200,
             bbox_inches='tight')
 print("Saved fig1")
 
 # ── Figure 2: Regime-stratified WAP ──────────────────────────
 fig, ax = plt.subplots(figsize=(10, 5))
-
 x = np.arange(4)
 width = 0.35
 strats = ['TWAP', 'Regime Aware Rule', 'PPO Blind', 'PPO Regime-Aware']
@@ -55,7 +54,6 @@ b1 = ax.bar(x - width/2, bull_wap, width, label='Bull days',
             color='#2ca02c', alpha=0.85, edgecolor='black')
 b2 = ax.bar(x + width/2, bear_wap, width, label='Bear days',
             color='#d62728', alpha=0.85, edgecolor='black')
-
 ax.axhline(y=1.0, color='black', linestyle='--', alpha=0.4,
            label='Starting price')
 ax.set_ylabel('WAP Normalized')
@@ -64,7 +62,6 @@ ax.set_xticks(x)
 ax.set_xticklabels(strats)
 ax.legend()
 ax.set_ylim(0.93, 1.12)
-
 for bar in b1:
     ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.001,
             f'{bar.get_height():.4f}', ha='center', va='bottom', fontsize=8)
@@ -73,14 +70,14 @@ for bar in b2:
             f'{bar.get_height():.4f}', ha='center', va='bottom', fontsize=8)
 
 plt.tight_layout()
-plt.savefig('paper/fig2_regime_breakdown.png', dpi=200, bbox_inches='tight')
+plt.savefig('../figures/fig2_regime_breakdown.png', dpi=200,
+            bbox_inches='tight')
 print("Saved fig2")
 
 # ── Figure 3: Perturbation analysis ──────────────────────────
-# use the regenerated data
 seeds = [0, 1, 2, 3, 4]
-true_actions  = [0.7384, 0.7383, 0.7384, 0.7385, 0.7384]
-flip_actions  = [0.7788, 0.7788, 0.7788, 0.7789, 0.7788]
+true_actions = [0.7384, 0.7383, 0.7384, 0.7385, 0.7384]
+flip_actions = [0.7788, 0.7788, 0.7788, 0.7789, 0.7788]
 x = np.arange(len(seeds))
 width = 0.35
 
@@ -97,10 +94,56 @@ ax.set_xticks(x)
 ax.set_xticklabels([f'Seed {s}' for s in seeds])
 ax.legend()
 ax.set_ylim(0.6, 0.9)
-# add difference annotation
 for i, (t, f) in enumerate(zip(true_actions, flip_actions)):
-    ax.text(i, max(t,f) + 0.005, f'Δ={abs(t-f):.4f}', 
+    ax.text(i, max(t, f) + 0.005, f'Δ={abs(t-f):.4f}',
             ha='center', fontsize=7, color='purple')
 plt.tight_layout()
-plt.savefig('paper/fig3_perturbation.png', dpi=200, bbox_inches='tight')
+plt.savefig('../figures/fig3_perturbation.png', dpi=200,
+            bbox_inches='tight')
 print("Saved fig3")
+
+# ── Figure 4: Learning curves ─────────────────────────────────
+aware_path = 'logs/curves_regime_aware_500000.json'
+blind_path  = 'logs/curves_blind_500000.json'
+
+if os.path.exists(aware_path) and os.path.exists(blind_path):
+    with open(aware_path) as f:
+        aware_curves = json.load(f)
+    with open(blind_path) as f:
+        blind_curves = json.load(f)
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+
+    for curves, label, color in [
+        (aware_curves, 'PPO State-Aware', '#DD8452'),
+        (blind_curves, 'PPO Blind', '#4C72B0')
+    ]:
+        min_len = min(len(c) for c in curves)
+        timesteps = [c['timestep'] for c in curves[0][:min_len]]
+        rewards = np.array([
+            [c['mean_reward'] for c in seed_curves[:min_len]]
+            for seed_curves in curves
+        ])
+        mean_r = np.mean(rewards, axis=0)
+        std_r  = np.std(rewards, axis=0)
+
+        ax.plot(timesteps, mean_r, color=color, label=label, linewidth=2)
+        ax.fill_between(timesteps, mean_r - std_r, mean_r + std_r,
+                        alpha=0.2, color=color)
+
+    ax.set_xlabel('Training timesteps')
+    ax.set_ylabel('Mean episode reward')
+    ax.set_title('Learning Curves: PPO State-Aware vs Blind\n'
+                 'Shaded region = ±1 std across 5 seeds')
+    ax.legend()
+    ax.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.savefig('../figures/fig4_learning_curves.png', dpi=200,
+                bbox_inches='tight')
+    print("Saved fig4")
+else:
+    print("Skipping fig4 — learning curve logs not found yet.")
+    print(f"  Expected: {aware_path}")
+    print(f"  Expected: {blind_path}")
+
+print("\nAll figures saved to ../figures/")
